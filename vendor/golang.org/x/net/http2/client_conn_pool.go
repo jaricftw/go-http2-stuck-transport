@@ -37,10 +37,32 @@ type clientConnPool struct {
 	mu sync.Mutex // TODO: maybe switch to RWMutex
 	// TODO: add support for sharing conns based on cert names
 	// (e.g. share conn for googleapis.com and appspot.com)
-	conns        map[string][]*ClientConn // key is host:port
-	dialing      map[string]*dialCall     // currently in-flight dials
+	conns        map[string]*clientConnGroup // key is host:port
+	dialing      map[string]*dialCall        // currently in-flight dials
 	keys         map[*ClientConn][]string
 	addConnCalls map[string]*addConnCall // in-flight addConnIfNeede calls
+}
+
+type clientConnGroup struct {
+	sync.Mutex
+
+	conns []*ClientConn
+}
+
+func (cg *clientConnGroup) getConn(pool ClientConnPool, req *http.Request, addr string) *ClientConn {
+	cg.Lock()
+	defer cg.Unlock()
+
+	for _, cc := range cg.conns {
+		if st := cc.idleState(); st.canTakeNewRequest {
+			if shouldTraceGetConn(pool, st) {
+				traceGetConn(req, addr)
+			}
+			return cc
+		}
+	}
+
+	return nil
 }
 
 func (p *clientConnPool) GetClientConn(req *http.Request, addr string) (*ClientConn, error) {
@@ -59,12 +81,12 @@ const (
 // during the back-and-forth between net/http and x/net/http2 (when the
 // net/http.Transport is upgraded to also speak http2), as well as support
 // the case where x/net/http2 is being used directly.
-func (p *clientConnPool) shouldTraceGetConn(st clientConnIdleState) bool {
+func shouldTraceGetConn(pool ClientConnPool, st clientConnIdleState) bool {
 	// If our Transport wasn't made via ConfigureTransport, always
 	// trace the GetConn hook if provided, because that means the
 	// http2 package is being used directly and it's the one
 	// dialing, as opposed to net/http.
-	if _, ok := p.t.ConnPool.(noDialClientConnPool); !ok {
+	if _, ok := pool.(noDialClientConnPool); !ok {
 		return true
 	}
 	// Otherwise, only use the GetConn hook if this connection has
@@ -84,20 +106,23 @@ func (p *clientConnPool) getClientConn(req *http.Request, addr string, dialOnMis
 		}
 		return cc, nil
 	}
+
 	p.mu.Lock()
-	for _, cc := range p.conns[addr] {
-		if st := cc.idleState(); st.canTakeNewRequest {
-			if p.shouldTraceGetConn(st) {
-				traceGetConn(req, addr)
-			}
-			p.mu.Unlock()
+	connGroup, ok := p.conns[addr]
+	p.mu.Unlock()
+
+	if ok {
+		if cc := connGroup.getConn(p.t.connPool(), req, addr); cc != nil {
 			return cc, nil
 		}
 	}
+
+	p.mu.Lock()
 	if !dialOnMiss {
 		p.mu.Unlock()
 		return nil, ErrNoCachedConn
 	}
+
 	traceGetConn(req, addr)
 	call := p.getStartDialLocked(addr)
 	p.mu.Unlock()
@@ -152,12 +177,21 @@ func (c *dialCall) dial(addr string) {
 // c is never closed.
 func (p *clientConnPool) addConnIfNeeded(key string, t *Transport, c *tls.Conn) (used bool, err error) {
 	p.mu.Lock()
-	for _, cc := range p.conns[key] {
-		if cc.CanTakeNewRequest() {
-			p.mu.Unlock()
-			return false, nil
+	cg, ok := p.conns[key]
+	p.mu.Unlock()
+
+	if ok {
+		cg.Lock()
+		for _, cc := range cg.conns {
+			if cc.CanTakeNewRequest() {
+				cg.Unlock()
+				return false, nil
+			}
 		}
+		cg.Unlock()
 	}
+
+	p.mu.Lock()
 	call, dup := p.addConnCalls[key]
 	if !dup {
 		if p.addConnCalls == nil {
@@ -208,35 +242,53 @@ func (p *clientConnPool) addConn(key string, cc *ClientConn) {
 
 // p.mu must be held
 func (p *clientConnPool) addConnLocked(key string, cc *ClientConn) {
-	for _, v := range p.conns[key] {
-		if v == cc {
-			return
+	if cg, ok := p.conns[key]; ok {
+		cg.Lock()
+		for _, v := range cg.conns {
+			if v == cc {
+				cg.Unlock()
+				return
+			}
 		}
+		cg.Unlock()
 	}
+
 	if p.conns == nil {
-		p.conns = make(map[string][]*ClientConn)
+		p.conns = make(map[string]*clientConnGroup)
 	}
 	if p.keys == nil {
 		p.keys = make(map[*ClientConn][]string)
 	}
-	p.conns[key] = append(p.conns[key], cc)
+
+	if _, ok := p.conns[key]; !ok {
+		p.conns[key] = &clientConnGroup{}
+	}
+	cg := p.conns[key]
+	cg.Lock()
+	cg.conns = append(cg.conns, cc)
+	cg.Unlock()
+
 	p.keys[cc] = append(p.keys[cc], key)
 }
 
 func (p *clientConnPool) MarkDead(cc *ClientConn) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
 	for _, key := range p.keys[cc] {
-		vv, ok := p.conns[key]
+		cg, ok := p.conns[key]
 		if !ok {
 			continue
 		}
-		newList := filterOutClientConn(vv, cc)
+
+		cg.Lock()
+		newList := filterOutClientConn(cg.conns, cc)
 		if len(newList) > 0 {
-			p.conns[key] = newList
+			cg.conns = newList
 		} else {
 			delete(p.conns, key)
 		}
+		cg.Unlock()
 	}
 	delete(p.keys, cc)
 }
@@ -250,10 +302,12 @@ func (p *clientConnPool) closeIdleConnections() {
 	// where it can add an idle conn just before using it, and
 	// somebody else can concurrently call CloseIdleConns and
 	// break some caller's RoundTrip.
-	for _, vv := range p.conns {
-		for _, cc := range vv {
+	for _, cg := range p.conns {
+		cg.Lock()
+		for _, cc := range cg.conns {
 			cc.closeIfIdle()
 		}
+		cg.Unlock()
 	}
 }
 
