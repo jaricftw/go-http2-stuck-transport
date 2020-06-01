@@ -6,6 +6,7 @@ package pipeline
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/constant"
@@ -13,6 +14,7 @@ import (
 	"go/token"
 	"go/types"
 	"path/filepath"
+	"sort"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -42,7 +44,9 @@ func Extract(c *Config) (*State, error) {
 		return nil, wrap(err, "")
 	}
 
-	x.seedEndpoints()
+	if err := x.seedEndpoints(); err != nil {
+		return nil, err
+	}
 	x.extractMessages()
 
 	return &State{
@@ -96,8 +100,12 @@ func (x *extracter) globalData(pos token.Pos) *constData {
 	return cd
 }
 
-func (x *extracter) seedEndpoints() {
-	pkg := x.prog.Package(x.iprog.Package("golang.org/x/text/message").Pkg)
+func (x *extracter) seedEndpoints() error {
+	pkgInfo := x.iprog.Package("golang.org/x/text/message")
+	if pkgInfo == nil {
+		return errors.New("pipeline: golang.org/x/text/message is not imported")
+	}
+	pkg := x.prog.Package(pkgInfo.Pkg)
 	typ := types.NewPointer(pkg.Type("Printer").Type())
 
 	x.processGlobalVars()
@@ -117,6 +125,7 @@ func (x *extracter) seedEndpoints() {
 		argPos:    3,
 		isMethod:  true,
 	})
+	return nil
 }
 
 // processGlobalVars finds string constants that are assigned to global
@@ -416,12 +425,13 @@ func (x *extracter) visitFormats(call *callData, v ssa.Value) {
 		// 	fn(p)
 		// }
 
+	case *ssa.Call:
+
 	case ssa.Instruction:
 		rands := v.Operands(nil)
 		if len(rands) == 1 && rands[0] != nil {
 			x.visitFormats(call, *rands[0])
 		}
-	case *ssa.Call:
 	}
 }
 
@@ -500,8 +510,14 @@ func (px packageExtracter) getComment(n ast.Node) string {
 
 func (x *extracter) extractMessages() {
 	prog := x.iprog
+	keys := make([]*types.Package, 0, len(x.iprog.AllPackages))
+	for k := range x.iprog.AllPackages {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool { return keys[i].Path() < keys[j].Path() })
 	files := []packageExtracter{}
-	for _, info := range x.iprog.AllPackages {
+	for _, k := range keys {
+		info := x.iprog.AllPackages[k]
 		for _, f := range info.Files {
 			// Associate comments with nodes.
 			px := packageExtracter{

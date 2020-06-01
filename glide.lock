@@ -1,20 +1,8 @@
-hash: bbb655a214c4109b189d6c77be45d7eaf50622fef600219d512af0ec17cd1b5a
-updated: 2019-07-19T06:32:56.989258198-07:00
+hash: f6a3e23a564aa9ba22fe75688ffc037b8b37778a41d7f035228919ab87c206c6
+updated: 2020-06-01T06:43:20.913936868Z
 imports:
-- name: github.com/gogo/protobuf
-  version: ba06b47c162d49f2af050fb4c75bcbc86a159d5c
-  subpackages:
-  - proto
-- name: github.com/golang/protobuf
-  version: 668a607657a5d387d6333648a2d9c749761fdc69
-  subpackages:
-  - proto
-  - ptypes
-  - ptypes/any
-  - ptypes/duration
-  - ptypes/timestamp
 - name: golang.org/x/net
-  version: da137c7871d730100384dbcf36e6f8fa493aef5b
+  version: 3c3fba18258b2a1398a025a6aeb7374d2a470009
   subpackages:
   - context
   - http/httpguts
@@ -22,69 +10,26 @@ imports:
   - http2/h2c
   - http2/hpack
   - idna
-  - internal/timeseries
-  - trace
-- name: golang.org/x/sys
-  version: 1a700e749ce29638d0bbcb531cce1094ea096bd3
+testImports:
+- name: github.com/davecgh/go-spew
+  version: d8f796af33cc11cb798c1aaeb27a4ebc5099927d
   subpackages:
-  - unix
+  - spew
+- name: github.com/pmezard/go-difflib
+  version: 5d4384ee4fb2527b0a1256a821ebfc92f91efefc
+  subpackages:
+  - difflib
+- name: github.com/stretchr/testify
+  version: 004e3cb72213e5e727e4e08f668ee6c8f27e5d32
+  subpackages:
+  - assert
+  - require
 - name: golang.org/x/text
-  version: 5c1cf69b5978e5a34c5f9ba09a83e56acc4b7877
+  version: 81608d7e9c6863c922f599e4ff1329a685218c0d
   subpackages:
   - secure/bidirule
   - transform
   - unicode/bidi
   - unicode/norm
-- name: google.golang.org/genproto
-  version: 7bb2a897381c9c5ab2aeb8614f758d7766af68ff
-  subpackages:
-  - googleapis/rpc/status
-- name: google.golang.org/grpc
-  version: 1d89a3c832915b2314551c1d2a506874d62e53f7
-  subpackages:
-  - balancer
-  - balancer/base
-  - balancer/roundrobin
-  - binarylog/grpc_binarylog_v1
-  - codes
-  - connectivity
-  - credentials
-  - credentials/internal
-  - encoding
-  - encoding/proto
-  - grpclog
-  - internal
-  - internal/backoff
-  - internal/balancerload
-  - internal/binarylog
-  - internal/channelz
-  - internal/envconfig
-  - internal/grpcrand
-  - internal/grpcsync
-  - internal/syscall
-  - internal/transport
-  - keepalive
-  - metadata
-  - naming
-  - peer
-  - resolver
-  - resolver/dns
-  - resolver/passthrough
-  - serviceconfig
-  - stats
-  - status
-  - tap
-testImports:
-- name: github.com/davecgh/go-spew
-  version: 8991bc29aa16c548c550c7ff78260e27b9ab7c73
-  subpackages:
-  - spew
-- name: github.com/pmezard/go-difflib
-  version: 792786c7400a136282c1664665ae0a8db921c6c2
-  subpackages:
-  - difflib
-- name: github.com/stretchr/testify
-  version: ffdc059bfe9ce6a4e144ba849dbedead332c6053
-  subpackages:
-  - assert
-  - require
+- name: gopkg.in/yaml.v3
+  version: 2ff61e1afc866138abf1a8adf3cc89721090ac31

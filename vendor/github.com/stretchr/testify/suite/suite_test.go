@@ -1,9 +1,14 @@
 package suite
 
 import (
+	"bytes"
 	"errors"
+	"flag"
 	"io/ioutil"
+	"math/rand"
 	"os"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -165,15 +170,6 @@ type SuiteTester struct {
 	TimeAfter  []time.Time
 }
 
-type SuiteSkipTester struct {
-	// Include our basic suite logic.
-	Suite
-
-	// Keep counts of how many times each method is run.
-	SetupSuiteRunCount    int
-	TearDownSuiteRunCount int
-}
-
 // The SetupSuite method will be run by testify once, at the very
 // start of the testing suite, before any tests are run.
 func (suite *SuiteTester) SetupSuite() {
@@ -192,18 +188,9 @@ func (suite *SuiteTester) AfterTest(suiteName, testName string) {
 	suite.TimeAfter = append(suite.TimeAfter, time.Now())
 }
 
-func (suite *SuiteSkipTester) SetupSuite() {
-	suite.SetupSuiteRunCount++
-	suite.T().Skip()
-}
-
 // The TearDownSuite method will be run by testify once, at the very
 // end of the testing suite, after all tests have been run.
 func (suite *SuiteTester) TearDownSuite() {
-	suite.TearDownSuiteRunCount++
-}
-
-func (suite *SuiteSkipTester) TearDownSuite() {
 	suite.TearDownSuiteRunCount++
 }
 
@@ -266,6 +253,30 @@ func (suite *SuiteTester) TestSubtest() {
 		})
 		suite.Equal(suiteT, suite.T())
 	}
+}
+
+type SuiteSkipTester struct {
+	// Include our basic suite logic.
+	Suite
+
+	// Keep counts of how many times each method is run.
+	SetupSuiteRunCount    int
+	TearDownSuiteRunCount int
+}
+
+func (suite *SuiteSkipTester) SetupSuite() {
+	suite.SetupSuiteRunCount++
+	suite.T().Skip()
+}
+
+func (suite *SuiteSkipTester) TestNothing() {
+	// SetupSuite is only called when at least one test satisfies
+	// test filter. For this suite to be set up (and then tore down)
+	// it is necessary to add at least one test method.
+}
+
+func (suite *SuiteSkipTester) TearDownSuite() {
+	suite.TearDownSuiteRunCount++
 }
 
 // TestRunSuite will be run by the 'go test' command, so within it, we
@@ -340,6 +351,33 @@ func TestRunSuite(t *testing.T) {
 
 }
 
+// This suite has no Test... methods. It's setup and teardown must be skipped.
+type SuiteSetupSkipTester struct {
+	Suite
+
+	setUp    bool
+	toreDown bool
+}
+
+func (s *SuiteSetupSkipTester) SetupSuite() {
+	s.setUp = true
+}
+
+func (s *SuiteSetupSkipTester) NonTestMethod() {
+
+}
+
+func (s *SuiteSetupSkipTester) TearDownSuite() {
+	s.toreDown = true
+}
+
+func TestSkippingSuiteSetup(t *testing.T) {
+	suiteTester := new(SuiteSetupSkipTester)
+	Run(t, suiteTester)
+	assert.False(t, suiteTester.setUp)
+	assert.False(t, suiteTester.toreDown)
+}
+
 func TestSuiteGetters(t *testing.T) {
 	suite := new(SuiteTester)
 	suite.SetT(t)
@@ -409,4 +447,143 @@ func TestSuiteLogging(t *testing.T) {
 	} else {
 		assert.NotContains(t, output, "TESTLOGPASS")
 	}
+}
+
+type CallOrderSuite struct {
+	Suite
+	callOrder []string
+}
+
+func (s *CallOrderSuite) call(method string) {
+	time.Sleep(time.Duration(rand.Intn(300)) * time.Millisecond)
+	s.callOrder = append(s.callOrder, method)
+}
+
+func TestSuiteCallOrder(t *testing.T) {
+	Run(t, new(CallOrderSuite))
+}
+func (s *CallOrderSuite) SetupSuite() {
+	s.call("SetupSuite")
+}
+
+func (s *CallOrderSuite) TearDownSuite() {
+	s.call("TearDownSuite")
+	assert.Equal(s.T(), "SetupSuite;SetupTest;Test A;TearDownTest;SetupTest;Test B;TearDownTest;TearDownSuite", strings.Join(s.callOrder, ";"))
+}
+func (s *CallOrderSuite) SetupTest() {
+	s.call("SetupTest")
+}
+
+func (s *CallOrderSuite) TearDownTest() {
+	s.call("TearDownTest")
+}
+
+func (s *CallOrderSuite) Test_A() {
+	s.call("Test A")
+}
+
+func (s *CallOrderSuite) Test_B() {
+	s.call("Test B")
+}
+
+type suiteWithStats struct {
+	Suite
+	wasCalled bool
+	stats     *SuiteInformation
+}
+
+func (s *suiteWithStats) HandleStats(suiteName string, stats *SuiteInformation) {
+	s.wasCalled = true
+	s.stats = stats
+}
+
+func (s *suiteWithStats) TestSomething() {
+	s.Equal(1, 1)
+}
+
+func TestSuiteWithStats(t *testing.T) {
+	suiteWithStats := new(suiteWithStats)
+	Run(t, suiteWithStats)
+
+	assert.True(t, suiteWithStats.wasCalled)
+	assert.NotZero(t, suiteWithStats.stats.Start)
+	assert.NotZero(t, suiteWithStats.stats.End)
+	assert.True(t, suiteWithStats.stats.Passed())
+
+	testStats := suiteWithStats.stats.TestStats["TestSomething"]
+	assert.NotZero(t, testStats.Start)
+	assert.NotZero(t, testStats.End)
+	assert.True(t, testStats.Passed)
+}
+
+// FailfastSuite will test the behavior when running with the failfast flag
+// It logs calls in the callOrder slice which we then use to assert the correct calls were made
+type FailfastSuite struct {
+	Suite
+	callOrder []string
+}
+
+func (s *FailfastSuite) call(method string) {
+	s.callOrder = append(s.callOrder, method)
+}
+
+func TestFailfastSuite(t *testing.T) {
+	// This test suite is run twice. Once normally and once with the -failfast flag by TestFailfastSuiteFailFastOn
+	// If you need to debug it run this test directly with the failfast flag set on/off as you need
+	failFast := flag.Lookup("test.failfast").Value.(flag.Getter).Get().(bool)
+	s := new(FailfastSuite)
+	ok := testing.RunTests(
+		allTestsFilter,
+		[]testing.InternalTest{{
+			Name: "TestFailfastSuite",
+			F: func(t *testing.T) {
+				Run(t, s)
+			},
+		}},
+	)
+	assert.Equal(t, false, ok)
+	if failFast {
+		// Test A Fails and because we are running with failfast Test B never runs and we proceed straight to TearDownSuite
+		assert.Equal(t, "SetupSuite;SetupTest;Test A Fails;TearDownTest;TearDownSuite", strings.Join(s.callOrder, ";"))
+	} else {
+		// Test A Fails and because we are running without failfast we continue and run Test B and then proceed to TearDownSuite
+		assert.Equal(t, "SetupSuite;SetupTest;Test A Fails;TearDownTest;SetupTest;Test B Passes;TearDownTest;TearDownSuite", strings.Join(s.callOrder, ";"))
+	}
+}
+func TestFailfastSuiteFailFastOn(t *testing.T) {
+	// To test this with failfast on (and isolated from other intended test failures in our test suite) we launch it in its own process
+	cmd := exec.Command("go", "test", "-v", "-race", "-run", "TestFailfastSuite", "-failfast")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	t.Log("Running go test -v -race -run TestFailfastSuite -failfast")
+	err := cmd.Run()
+	t.Log(out.String())
+	if err != nil {
+		t.Log(err)
+		t.Fail()
+	}
+}
+func (s *FailfastSuite) SetupSuite() {
+	s.call("SetupSuite")
+}
+
+func (s *FailfastSuite) TearDownSuite() {
+	s.call("TearDownSuite")
+}
+func (s *FailfastSuite) SetupTest() {
+	s.call("SetupTest")
+}
+
+func (s *FailfastSuite) TearDownTest() {
+	s.call("TearDownTest")
+}
+
+func (s *FailfastSuite) Test_A_Fails() {
+	s.call("Test A Fails")
+	s.T().Error("Test A meant to fail")
+}
+
+func (s *FailfastSuite) Test_B_Passes() {
+	s.call("Test B Passes")
+	s.Require().True(true)
 }

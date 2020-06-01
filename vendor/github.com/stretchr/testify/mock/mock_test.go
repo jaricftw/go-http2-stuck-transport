@@ -486,6 +486,29 @@ func Test_Mock_Return(t *testing.T) {
 	assert.Nil(t, call.WaitFor)
 }
 
+func Test_Mock_Panic(t *testing.T) {
+
+	// make a test impl object
+	var mockedService = new(TestExampleImplementation)
+
+	c := mockedService.
+		On("TheExampleMethod", "A", "B", true).
+		Panic("panic message for example method")
+
+	require.Equal(t, []*Call{c}, mockedService.ExpectedCalls)
+
+	call := mockedService.ExpectedCalls[0]
+
+	assert.Equal(t, "TheExampleMethod", call.Method)
+	assert.Equal(t, "A", call.Arguments[0])
+	assert.Equal(t, "B", call.Arguments[1])
+	assert.Equal(t, true, call.Arguments[2])
+	assert.Equal(t, 0, call.Repeatability)
+	assert.Equal(t, 0, call.Repeatability)
+	assert.Equal(t, "panic message for example method", *call.PanicMsg)
+	assert.Nil(t, call.WaitFor)
+}
+
 func Test_Mock_Return_WaitUntil(t *testing.T) {
 
 	// make a test impl object
@@ -740,11 +763,22 @@ func Test_Mock_findExpectedCall_Respects_Repeatability(t *testing.T) {
 		}
 	}
 
+	c = m.On("Once", 1).Return("one").Once()
+	c.Repeatability = -1
+	f, c = m.findExpectedCall("Once", 1)
+	if assert.Equal(t, -1, f) {
+		if assert.NotNil(t, c) {
+			assert.Equal(t, "Once", c.Method)
+			assert.Equal(t, 1, c.Arguments[0])
+			assert.Equal(t, "one", c.ReturnArguments[0])
+		}
+	}
 }
 
 func Test_callString(t *testing.T) {
 
 	assert.Equal(t, `Method(int,bool,string)`, callString("Method", []interface{}{1, true, "something"}, false))
+	assert.Equal(t, `Method(<nil>)`, callString("Method", []interface{}{nil}, false))
 
 }
 
@@ -1133,6 +1167,41 @@ func Test_Mock_AssertNotCalled(t *testing.T) {
 
 }
 
+func Test_Mock_IsMethodCallable(t *testing.T) {
+	var mockedService = new(TestExampleImplementation)
+
+	arg := []Call{{Repeatability: 1}, {Repeatability: 2}}
+	arg2 := []Call{{Repeatability: 1}, {Repeatability: 1}}
+	arg3 := []Call{{Repeatability: 1}, {Repeatability: 1}}
+
+	mockedService.On("Test_Mock_IsMethodCallable", arg2).Return(true).Twice()
+
+	assert.False(t, mockedService.IsMethodCallable(t, "Test_Mock_IsMethodCallable", arg))
+	assert.True(t, mockedService.IsMethodCallable(t, "Test_Mock_IsMethodCallable", arg2))
+	assert.True(t, mockedService.IsMethodCallable(t, "Test_Mock_IsMethodCallable", arg3))
+
+	mockedService.MethodCalled("Test_Mock_IsMethodCallable", arg2)
+	mockedService.MethodCalled("Test_Mock_IsMethodCallable", arg2)
+
+	assert.False(t, mockedService.IsMethodCallable(t, "Test_Mock_IsMethodCallable", arg2))
+}
+
+func TestIsArgsEqual(t *testing.T) {
+	var expected = Arguments{5, 3, 4, 6, 7, 2}
+	var args = make([]interface{}, 5)
+	for i := 1; i < len(expected); i++ {
+		args[i-1] = expected[i]
+	}
+	args[2] = expected[1]
+	assert.False(t, isArgsEqual(expected, args))
+
+	var arr = make([]interface{}, 6)
+	for i := 0; i < len(expected); i++ {
+		arr[i] = expected[i]
+	}
+	assert.True(t, isArgsEqual(expected, arr))
+}
+
 func Test_Mock_AssertOptional(t *testing.T) {
 	// Optional called
 	var ms1 = new(TestExampleImplementation)
@@ -1247,6 +1316,24 @@ func Test_Arguments_Diff_WithAnythingOfTypeArgument_Failing(t *testing.T) {
 
 }
 
+func Test_Arguments_Diff_WithIsTypeArgument(t *testing.T) {
+	var args = Arguments([]interface{}{"string", IsType(0), true})
+	var count int
+	_, count = args.Diff([]interface{}{"string", 123, true})
+
+	assert.Equal(t, 0, count)
+}
+
+func Test_Arguments_Diff_WithIsTypeArgument_Failing(t *testing.T) {
+	var args = Arguments([]interface{}{"string", IsType(""), true})
+	var count int
+	var diff string
+	diff, count = args.Diff([]interface{}{"string", 123, true})
+
+	assert.Equal(t, 1, count)
+	assert.Contains(t, diff, `string != type int - (int=123)`)
+}
+
 func Test_Arguments_Diff_WithArgMatcher(t *testing.T) {
 	matchFn := func(a int) bool {
 		return a == 123
@@ -1262,6 +1349,7 @@ func Test_Arguments_Diff_WithArgMatcher(t *testing.T) {
 	assert.Contains(t, diff, `(bool=false) not matched by func(int) bool`)
 
 	diff, count = args.Diff([]interface{}{"string", 123, false})
+	assert.Equal(t, 1, count)
 	assert.Contains(t, diff, `(int=123) matched by func(int) bool`)
 
 	diff, count = args.Diff([]interface{}{"string", 123, true})
@@ -1353,6 +1441,14 @@ func Test_MockMethodCalled(t *testing.T) {
 	retArgs := m.MethodCalled("foo", "hello")
 	require.True(t, len(retArgs) == 1)
 	require.Equal(t, "world", retArgs[0])
+	m.AssertExpectations(t)
+}
+
+func Test_MockMethodCalled_Panic(t *testing.T) {
+	m := new(Mock)
+	m.On("foo", "hello").Panic("world panics")
+
+	require.PanicsWithValue(t, "world panics", func() { m.MethodCalled("foo", "hello") })
 	m.AssertExpectations(t)
 }
 
