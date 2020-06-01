@@ -1,4 +1,4 @@
-package: github.com/prashantv/go-bug-28634-repro
+package: github.com/jaricftw/go-http2-stuck-transport
 import:
 - package: golang.org/x/net
   version: master
