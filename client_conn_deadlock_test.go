@@ -10,7 +10,6 @@ import (
 	"net/http"
 	_ "net/http/pprof"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,23 +88,6 @@ func newHTTP2Server(delegate http.Handler) *http.Server {
 	}
 }
 
-func startBlockingTCP(t *testing.T) net.Listener {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err, "listen failed")
-
-	go func() {
-		for {
-			conn, _ := ln.Accept()
-			if conn, ok := conn.(*net.TCPConn); ok {
-				// Set a small read buffer so we're more likely to hit the write buffer limit on the client.
-				conn.SetReadBuffer(10)
-			}
-		}
-	}()
-
-	return ln
-}
-
 func newHTTP2Client() *http.Client {
 	return &http.Client{
 		Transport: &http2.Transport{
@@ -122,15 +104,6 @@ func newHTTP2Client() *http.Client {
 		},
 		Timeout: time.Minute,
 	}
-}
-
-type infiniteReader struct {
-	read int64
-}
-
-func (r *infiniteReader) Read(p []byte) (int, error) {
-	atomic.AddInt64(&r.read, int64(len(p)))
-	return len(p), nil
 }
 
 func echoHandler(w http.ResponseWriter, r *http.Request) {
